@@ -1,0 +1,173 @@
+# The whole system on ONE machine: every component runs in its own container.
+# All containers join one Docker network and reach each other by NAME
+# (kafka-broker-1, redis-1, master...). Docker's built-in DNS resolves the names.
+#
+#   docker compose up -d --build       start everything
+#   docker compose ps                  what is running
+#   docker compose logs -f <name>      follow one container's logs
+#   docker compose down                stop and delete everything
+name: image-pipeline
+
+# ─────────────────── reusable blocks (YAML anchors) ───────────────────
+x-kafka-env: &kafka-env
+  # Every node of one cluster must share the same cluster id (storage is formatted with it)
+  CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+  # The KRaft controller quorum: just node 0 here (production: 3 or 5 controllers)
+  KAFKA_CONTROLLER_QUORUM_VOTERS: "0@kafka-controller:9093"
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+
+x-broker-env: &broker-env
+  KAFKA_PROCESS_ROLES: broker
+  KAFKA_LISTENERS: "PLAINTEXT://:9092"
+  KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"          # topics only via kafka-init
+  KAFKA_DEFAULT_REPLICATION_FACTOR: 2
+  KAFKA_MIN_INSYNC_REPLICAS: 1
+  KAFKA_OFFSETS_TOPIC_NUM_PARTITIONS: 2             # __consumer_offsets: 2 partitions -> 2 possible coordinators
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 2         # committed offsets survive a broker failure
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 2
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0         # don't wait 3s before the first rebalance
+  KAFKA_HEAP_OPTS: "-Xmx512M -Xms512M"
+
+x-python: &python
+  image: image-pipeline:latest   # built once by kafka-init (below), reused by every Python container
+  pull_policy: never             # it's a local image - never try to download it
+  depends_on: &python-deps
+    kafka-init: { condition: service_completed_successfully }
+    redis-sentinel-1: { condition: service_started }
+    redis-sentinel-2: { condition: service_started }
+    redis-sentinel-3: { condition: service_started }
+
+x-sentinel: &sentinel
+  image: redis:7.4-alpine
+  # Sentinel REWRITES its config file at runtime, so copy it somewhere writable first
+  command: ["sh", "-c", "cp /etc/sentinel/sentinel.conf /data/sentinel.conf && exec redis-sentinel /data/sentinel.conf"]
+  volumes: ["./infra/redis/sentinel.conf:/etc/sentinel/sentinel.conf:ro"]
+  depends_on:
+    redis-1: { condition: service_healthy }
+
+services:
+  # ═══════════════════════════ 1. KAFKA (KRaft) ═══════════════════════════
+  kafka-controller:            # metadata + leader elections; stores NO messages
+    image: apache/kafka:4.1.0
+    container_name: kafka-controller
+    hostname: kafka-controller
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: 0
+      KAFKA_PROCESS_ROLES: controller
+      KAFKA_LISTENERS: "CONTROLLER://:9093"
+      # The controller moves leadership back to the preferred leader (broker 1)
+      # after a failure. It checks every 30s (default 300s).
+      KAFKA_LEADER_IMBALANCE_CHECK_INTERVAL_SECONDS: 30
+      KAFKA_HEAP_OPTS: "-Xmx256M -Xms256M"
+
+  kafka-broker-1:              # stores partitions; preferred LEADER of every partition
+    image: apache/kafka:4.1.0
+    container_name: kafka-broker-1
+    hostname: kafka-broker-1
+    depends_on: [kafka-controller]
+    environment:
+      <<: [*kafka-env, *broker-env]
+      KAFKA_NODE_ID: 1
+      # the address this broker tells clients to use to reach it
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-broker-1:9092"
+
+  kafka-broker-2:              # stores partitions; FOLLOWER (replica) of every partition
+    image: apache/kafka:4.1.0
+    container_name: kafka-broker-2
+    hostname: kafka-broker-2
+    depends_on: [kafka-controller]
+    environment:
+      <<: [*kafka-env, *broker-env]
+      KAFKA_NODE_ID: 2
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-broker-2:9092"
+
+  kafka-init:                  # one-shot: creates topics, prints leaders + coordinators, exits
+    <<: *python
+    build: .                   # builds image-pipeline:latest from the Dockerfile
+    container_name: kafka-init
+    command: ["python", "-m", "kafka_setup.setup_kafka"]
+    depends_on: [kafka-broker-1, kafka-broker-2]
+    restart: "no"
+
+  # ══════════════════ 2. REDIS: 1 master + 2 replicas + 3 sentinels ══════════════════
+  redis-1:                     # starts as the MASTER
+    image: redis:7.4-alpine
+    container_name: redis-1
+    hostname: redis-1
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--replica-announce-ip", "redis-1"]
+    volumes: ["./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro"]
+    healthcheck: &redis-health
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 15
+
+  redis-2:                     # starts as a REPLICA of redis-1
+    image: redis:7.4-alpine
+    container_name: redis-2
+    hostname: redis-2
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--replicaof", "redis-1", "6379", "--replica-announce-ip", "redis-2"]
+    volumes: ["./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro"]
+    healthcheck: *redis-health
+    depends_on: { redis-1: { condition: service_healthy } }
+
+  redis-3:                     # starts as a REPLICA of redis-1
+    image: redis:7.4-alpine
+    container_name: redis-3
+    hostname: redis-3
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--replicaof", "redis-1", "6379", "--replica-announce-ip", "redis-3"]
+    volumes: ["./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro"]
+    healthcheck: *redis-health
+    depends_on: { redis-1: { condition: service_healthy } }
+
+  redis-sentinel-1: { <<: *sentinel, container_name: redis-sentinel-1, hostname: redis-sentinel-1 }
+  redis-sentinel-2: { <<: *sentinel, container_name: redis-sentinel-2, hostname: redis-sentinel-2 }
+  redis-sentinel-3: { <<: *sentinel, container_name: redis-sentinel-3, hostname: redis-sentinel-3 }
+
+  # ═════════════════ 3. WORKERS: 2 consumer groups x 2 workers ═════════════════
+  worker-blur-1:
+    <<: *python
+    container_name: worker-blur-1
+    command: ["python", "-m", "worker.worker"]
+    environment: { WORKER_ID: worker-blur-1, WORKER_FILTER: blur }
+
+  worker-blur-2:
+    <<: *python
+    container_name: worker-blur-2
+    command: ["python", "-m", "worker.worker"]
+    environment: { WORKER_ID: worker-blur-2, WORKER_FILTER: blur }
+
+  worker-bw-1:
+    <<: *python
+    container_name: worker-bw-1
+    command: ["python", "-m", "worker.worker"]
+    environment: { WORKER_ID: worker-bw-1, WORKER_FILTER: blackwhite }
+
+  worker-bw-2:
+    <<: *python
+    container_name: worker-bw-2
+    command: ["python", "-m", "worker.worker"]
+    environment: { WORKER_ID: worker-bw-2, WORKER_FILTER: blackwhite }
+
+  # ═════════════════════════════ 4. MASTER ═════════════════════════════
+  master:
+    <<: *python
+    container_name: master
+    command: ["python", "-m", "master.app"]
+    ports: ["5050:5000"]       # optional: lets you curl the master API from your Mac
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/healthz')"]
+      interval: 3s
+      retries: 20
+
+  # ═══════════════════════════ 5. WEB (user) ═══════════════════════════
+  web:
+    <<: *python
+    container_name: web
+    command: ["python", "-m", "web.app"]
+    ports: ["8090:8080"]       # open http://localhost:8090  (host port 8090 -> container port 8080)
+    depends_on:
+      master: { condition: service_healthy }

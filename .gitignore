@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Mac / editors
+.DS_Store
+.vscode/
+.idea/
+
+# Secrets and local settings
+.env
+
+# Personal test images in the project root (the demo images live in samples/)
+/*.jpg
+/*.jpeg
+/*.png
+
+# Logs
+*.log

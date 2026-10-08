@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Image Pipeline</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body data-filters='{{ filters | tojson }}'>
+  <header class="topbar">
+    <div>
+      <h1>Distributed Image Pipeline</h1>
+      <p class="sub">Web → Master → Kafka (KRaft · 2 brokers) → Workers → Master · state &amp; cache in Redis (Sentinel)</p>
+    </div>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <main class="layout">
+    <section>
+      <form id="upload" class="panel upload">
+        <label class="drop" id="drop">
+          <input type="file" id="file" accept="image/*" multiple hidden>
+          <span class="drop-title">Drop images here or click to choose</span>
+          <span class="drop-hint">PNG / JPG, at least 1024 × 1024 · several files at once is fine</span>
+          <span class="drop-files" id="chosen"></span>
+        </label>
+        <div class="controls">
+          {% for key, label in filters.items() %}
+          <label class="chip">
+            <input type="radio" name="filter" value="{{ key }}" {% if loop.first %}checked{% endif %}>
+            <span>{{ label }}</span>
+          </label>
+          {% endfor %}
+          <button type="submit">Upload</button>
+        </div>
+      </form>
+
+      <h2 class="section-title">Feed</h2>
+      <p id="empty" class="empty">No images yet. Upload one above.</p>
+      <div id="feed" class="feed"></div>
+    </section>
+
+    <aside class="side">
+      <div class="panel"><h3>Workers <small>Redis heartbeats (TTL)</small></h3><div id="workers"></div></div>
+      <div class="panel"><h3>Kafka partitions <small>leader · replicas · ISR</small></h3><div id="partitions"></div></div>
+      <div class="panel"><h3>Consumer groups <small>coordinator · committed offsets</small></h3><div id="groups"></div></div>
+      <div class="panel"><h3>Redis <small>asked via Sentinel</small></h3><div id="redis"></div></div>
+      <div class="panel"><h3>Events</h3><ul id="events" class="events"></ul></div>
+    </aside>
+  </main>
+
+  <div id="toasts" class="toasts"></div>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
