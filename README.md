@@ -39,10 +39,6 @@ together. Everything runs on one machine as 16 Docker containers.
 | `master` | API + Kafka producer + Kafka consumer + health monitor |
 | `web` | the website (port **8090**), forwards calls to the master |
 
-**Docs for learning:**
-- [docs/1-concepts.md](docs/1-concepts.md): how Kafka, Redis and Docker work here, what was different from the original plan, and interview Q&A
-- [docs/2-code-walkthrough.md](docs/2-code-walkthrough.md): follows one upload through the code, file by file
-
 ---
 
 ## Run it step by step
@@ -142,7 +138,7 @@ Watch the Sentinel side with `docker compose logs -f redis-sentinel-1`.
 
 ---
 
-## Command cheat sheet
+## Commands
 
 **Docker**
 ```bash

@@ -19,3 +19,6 @@ venv/
 
 # Logs
 *.log
+
+# Local learning docs (kept on this machine, not on GitHub)
+docs/
