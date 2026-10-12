@@ -1,7 +1,10 @@
 """
-Generate colourful test images (so blur / black & white are easy to see).
+make_test_image.py - generates the demo images in samples/.
 
-    docker compose run --rm -v "$PWD/samples:/app/samples" master python -m tools.make_test_image
+Colour gradients + sharp grid lines + a red circle, so blur and black & white are easy
+to see. Sizes: 1024x1024 (4 tiles), 2048x2048 (16 tiles), 4096x3072 (48 tiles).
+
+    docker run --rm -v "$PWD/samples:/app/samples" image-pipeline:latest python -m tools.make_test_image
 """
 import cv2
 import numpy as np
@@ -13,7 +16,7 @@ for name, (w, h) in SIZES.items():
     y = np.linspace(0, 255, h, dtype=np.uint8)
     img = np.dstack([np.tile(x, (h, 1)), np.tile(y[:, None], (1, w)),
                      np.full((h, w), 160, np.uint8)]).copy()           # colour gradient
-    for i in range(0, w, 128):                                          # sharp grid lines
+    for i in range(0, w, 128):                                          # sharp lines show the blur
         cv2.line(img, (i, 0), (i, h), (255, 255, 255), 2)
     for j in range(0, h, 128):
         cv2.line(img, (0, j), (w, j), (255, 255, 255), 2)

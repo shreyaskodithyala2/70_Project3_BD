@@ -1,4 +1,8 @@
-// Front-end: upload images, then poll the API every 1.5s ("real time" feed + cluster view).
+// app.js - the page's JavaScript (runs in the browser).
+// 1. Upload: sends each chosen file + filter to POST /api/jobs (API call 1).
+// 2. Every 1.5s polls /api/feed (job cards: progress, tile map, result) and
+//    /api/cluster (workers, Kafka partitions & groups, Redis master, events).
+// All requests go to the web container, which forwards them to the master.
 const $ = (sel) => document.querySelector(sel);
 const FILTERS = JSON.parse(document.body.dataset.filters);
 const PALETTE = ['#2563eb', '#ea580c', '#0d9488', '#c026d3', '#65a30d', '#dc2626'];
@@ -7,6 +11,7 @@ const workerColor = {};          // worker id -> colour, assigned from the sorte
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const time = (ts) => new Date(ts * 1000).toLocaleTimeString();
 
+// Small pop-up message in the corner for 5s. kind = '' or 'error'.
 function toast(text, kind = '') {
   const el = document.createElement('div');
   el.className = `toast ${kind}`;
@@ -29,6 +34,7 @@ drop.addEventListener('drop', (e) => {
   fileInput.dispatchEvent(new Event('change'));
 });
 
+// Upload button: POST every chosen file in parallel; the reply says cached / tiles published / error.
 $('#upload').addEventListener('submit', async (e) => {
   e.preventDefault();
   const files = [...fileInput.files];
@@ -58,6 +64,7 @@ $('#upload').addEventListener('submit', async (e) => {
 // ───────────── feed (API calls 2 & 3: job status + result image) ─────────────
 const cards = new Map();   // job id -> {el, ...} so cards are updated, not re-created
 
+// Build the DOM card for a new job (image area, badge, progress bar). Returns {el, ...}.
 function createCard(job) {
   const el = document.createElement('article');
   el.className = 'card';
@@ -78,6 +85,7 @@ function createCard(job) {
   return card;
 }
 
+// Show the 'original' thumbnail (GET .../preview) or the 'result' image (GET .../result, API call 3).
 function show(card, which) {
   if (card.showing === which) return;
   card.showing = which;
@@ -105,6 +113,7 @@ function buildGrid(card, job) {
   card.gridBuilt = true;
 }
 
+// Refresh one card from the job's latest status: badge, progress, tile colours, footer text.
 function updateCard(card, job) {
   card.jobId = job.job_id;
   const el = card.el;
@@ -139,6 +148,7 @@ function updateCard(card, job) {
     : `${split ? `image_tasks ${split}` : ''}${job.duration_ms ? ` · done in ${(job.duration_ms / 1000).toFixed(1)} s` : ''}`;
 }
 
+// GET /api/feed (newest jobs first) -> create or update a card per job, keep them in feed order.
 async function refreshFeed() {
   const res = await fetch('/api/feed');
   if (!res.ok) return;
@@ -154,6 +164,8 @@ async function refreshFeed() {
 }
 
 // ───────────── cluster panel ─────────────
+// Workers table from Redis heartbeats: alive/dead dot, group, partitions, TTL, tiles done.
+// Also assigns each worker a colour used in the tile map.
 function renderWorkers(workers) {
   workers.slice().sort((a, b) => a.worker_id.localeCompare(b.worker_id)).forEach((w, i) => {
     workerColor[w.worker_id] = PALETTE[i % PALETTE.length];
@@ -169,6 +181,8 @@ function renderWorkers(workers) {
   </table>` : '<p class="muted">No workers have sent a heartbeat yet.</p>';
 }
 
+// Kafka panel: partition leader / replicas / ISR, and per group its coordinator,
+// owner, committed offset, end offset and lag of each partition.
 function renderKafka(kafka) {
   if (!kafka.topics) { $('#partitions').innerHTML = '<p class="muted">Waiting for Kafka…</p>'; return; }
   const rows = Object.entries(kafka.topics).flatMap(([topic, parts]) => parts.map((p) => `<tr>
@@ -190,6 +204,7 @@ function renderKafka(kafka) {
       </table>`}</div>`).join('');
 }
 
+// GET /api/cluster -> redraw workers, Kafka, Redis master, event log and the counters on top.
 async function refreshCluster() {
   const res = await fetch('/api/cluster');
   if (!res.ok) return;
@@ -207,6 +222,7 @@ async function refreshCluster() {
     .map(([label, v]) => `<div class="stat"><b>${v || 0}</b><span>${label}</span></div>`).join('');
 }
 
+// Poll forever: cluster panel + feed every 1.5s (errors ignored while the master restarts).
 async function loop() {
   try { await refreshCluster(); await refreshFeed(); } catch (e) { /* master restarting */ }
   setTimeout(loop, 1500);

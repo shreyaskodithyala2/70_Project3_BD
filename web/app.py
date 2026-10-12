@@ -1,9 +1,9 @@
 """
-WEB - the user-facing Flask app (http://localhost:8090 on your Mac).
+app.py - the WEB container: the website the user opens (http://localhost:8090).
 
-It knows nothing about Kafka or Redis. It serves the page and forwards the
-browser's API calls to the master over HTTP (inside the Docker network the
-master is reachable at http://master:5000 - Docker's DNS resolves the name).
+Knows nothing about Kafka or Redis. It serves the page and forwards the browser's
+API calls to the master over HTTP (http://master:5000 - "master" is resolved by
+Docker's DNS inside the network).
 """
 import logging
 
@@ -21,19 +21,22 @@ app.config["MAX_CONTENT_LENGTH"] = config.MAX_UPLOAD_BYTES
 
 
 def relay(resp):
-    """Pass the master's response (JSON or image) back to the browser."""
+    """Pass the master's response (JSON or image) back to the browser unchanged."""
     return Response(resp.content, status=resp.status_code,
                     content_type=resp.headers.get("Content-Type"))
 
 
 @app.get("/")
 def index():
+    """The page itself (templates/index.html); the filter list fills the radio buttons."""
     return render_template("index.html", filters=config.FILTERS)
 
 
 @app.post("/api/jobs")
 def upload():
-    """API call 1: user -> web -> master. Forward the file + chosen filter."""
+    """API call 1 - upload. Browser -> web -> master POST /api/jobs.
+    Request:  multipart form  file=<image>, filter=blur|blackwhite
+    Returns:  the master's answer (job id, cached or processing), or 502 if unreachable"""
     file = request.files.get("file")
     if not file:
         return jsonify(error="no file"), 400
@@ -51,7 +54,8 @@ def upload():
 
 @app.get("/api/<path:path>")
 def proxy_get(path):
-    """API calls 2 & 3 (status, result image) and the dashboard data."""
+    """API calls 2 and 3 plus the dashboard: forwards any GET /api/... to the master.
+    Example: GET /api/jobs/a3f9c1/result -> GET http://master:5000/api/jobs/a3f9c1/result"""
     try:
         return relay(requests.get(f"{config.MASTER_URL}/api/{path}", timeout=10))
     except requests.RequestException as e:
